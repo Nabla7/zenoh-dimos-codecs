@@ -133,18 +133,20 @@ fn check(status: OSStatus, what: &str) -> Result<()> {
 }
 
 /// The output callback's slot: the access unit of the frame just completed.
-type Slot = Mutex<Option<Result<(Vec<u8>, bool)>>>;
+type Slot = Mutex<Option<Result<Option<(Vec<u8>, bool)>>>>;
 
-extern "C" fn on_output(refcon: *mut c_void, _: *mut c_void, status: OSStatus, _: u32, sample: CFTypeRef) {
+extern "C" fn on_output(refcon: *mut c_void, _: *mut c_void, status: OSStatus, info_flags: u32, sample: CFTypeRef) {
     // SAFETY: refcon is the session's boxed slot, alive until the session is invalidated
     let slot = unsafe { &*(refcon as *const Slot) };
     let result = if status != 0 {
         Err(anyhow!("VideoToolbox encode: OSStatus {status}"))
-    } else if sample.is_null() {
-        Err(anyhow!("VideoToolbox dropped the frame"))
+    } else if info_flags & (1 << 1) != 0 || sample.is_null() {
+        // kVTEncodeInfo_FrameDropped is normal rate control, not a failed session.
+        // Returning an error here makes ProcessEncoder kill and recreate the encoder.
+        Ok(None)
     } else {
         // SAFETY: the sample buffer is valid for the callback's duration
-        unsafe { annex_b(sample) }
+        unsafe { annex_b(sample) }.map(Some)
     };
     *slot.lock().unwrap() = Some(result);
 }
@@ -247,7 +249,7 @@ impl Session {
     }
 
     /// Copies an I420 picture into a pooled NV12 buffer, encodes it and waits for its access unit.
-    fn encode(&mut self, i420: &[u8], pts: CMTime, keyframe: bool) -> Result<(Vec<u8>, bool)> {
+    fn encode(&mut self, i420: &[u8], pts: CMTime, keyframe: bool) -> Result<Option<(Vec<u8>, bool)>> {
         let (width, height) = (self.size.0 as usize, self.size.1 as usize);
         let (luma, chroma) = i420.split_at(width * height);
         let (u, v) = chroma.split_at(width * height / 4);
@@ -288,6 +290,7 @@ pub struct VideoToolboxEncoder {
     /// presentation time of the next frame, µs: frames are `1 / fps` apart, so rate control spends `bitrate / fps` on
     /// each (wall-clock stamps gave a burst of frames a fraction of that)
     next_pts: i64,
+    pending_keyframe: bool,
 }
 
 impl VideoEncoder for VideoToolboxEncoder {
@@ -310,7 +313,34 @@ impl VideoEncoder for VideoToolboxEncoder {
         let i420 = image.to_i420(target.width, target.height)?;
         let pts = CMTime { value: self.next_pts, timescale: 1_000_000, flags: CMTIME_FLAGS_VALID, epoch: 0 };
         self.next_pts += (1e6 / target.fps.max(MIN_FPS)).round().max(1.0) as i64;
-        let (data, keyframe) = session.encode(i420.data(), pts, target.keyframe || fresh)?;
+        self.pending_keyframe |= target.keyframe || fresh;
+        let Some((data, keyframe)) = session.encode(i420.data(), pts, self.pending_keyframe)? else {
+            return Ok(None);
+        };
+        if keyframe {
+            self.pending_keyframe = false;
+        }
         Ok(Some(EncodedVideo { data, width: target.width, height: target.height, keyframe }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dropped_output_keeps_the_session_alive() {
+        for flags in [0, 1 << 1] {
+            let slot: Slot = Mutex::new(None);
+            on_output((&raw const slot).cast_mut().cast(), null_mut(), 0, flags, null());
+            assert!(slot.lock().unwrap().take().unwrap().unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn encoder_failure_still_reaches_process_recovery() {
+        let slot: Slot = Mutex::new(None);
+        on_output((&raw const slot).cast_mut().cast(), null_mut(), -12903, 1 << 1, null());
+        assert!(slot.lock().unwrap().take().unwrap().unwrap_err().to_string().contains("-12903"));
     }
 }
