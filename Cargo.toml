@@ -22,7 +22,7 @@ gstreamer = ["dep:libloading"]
 turbojpeg = ["dep:turbojpeg"]
 
 [dependencies]
-zenoh-gateway = { git = "https://github.com/Nabla7/zenoh-gateway", rev = "f433dfeafabd4674df883dbea1dc49ab3fb025bd" }
+zenoh-gateway = { git = "https://github.com/Nabla7/zenoh-gateway", rev = "e98a2b949026b8b303ff3d3336b9fa58a27ed7c5" }
 anyhow = "1"
 # encodeOptions
 serde_json = "1"

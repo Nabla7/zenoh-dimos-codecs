@@ -5188,7 +5188,7 @@ dependencies = [
 [[package]]
 name = "zenoh-gateway"
 version = "0.5.37"
-source = "git+https://github.com/Nabla7/zenoh-gateway?rev=f433dfeafabd4674df883dbea1dc49ab3fb025bd#f433dfeafabd4674df883dbea1dc49ab3fb025bd"
+source = "git+https://github.com/Nabla7/zenoh-gateway?rev=e98a2b949026b8b303ff3d3336b9fa58a27ed7c5#e98a2b949026b8b303ff3d3336b9fa58a27ed7c5"
 dependencies = [
  "anyhow",
  "async-trait",
